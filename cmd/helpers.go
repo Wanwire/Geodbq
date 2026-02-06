@@ -68,22 +68,18 @@ func checkRuleMatch(
 			return false, nil
 		}
 		protoLower := strings.ToLower(protoStr)
-		protoMatched := false
+		found := false
 		for _, p := range rule.Protocol {
 			if strings.ToLower(p) == protoLower {
-				protoMatched = true
+				found = true
 				details = append(details, fmt.Sprintf("Protocol matched: %s", p))
 				break
 			}
 		}
-		if !protoMatched {
+		if !found {
 			return false, nil
-		} else {
-			ruleDetails := describeProtocolMatch(rawRule, protoStr)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeProtocolMatch(rawRule, protoStr)...)
 	}
 
 	// Networks (tcp/udp — assume "tcp" if not specified)
@@ -93,95 +89,77 @@ func checkRuleMatch(
 			netStr = "tcp" // default assumption
 		}
 		netLower := strings.ToLower(netStr)
-		netMatched := false
+		found := false
 		for _, n := range rule.Networks {
 			if strings.ToLower(n.String()) == netLower {
-				netMatched = true
+				found = true
 				details = append(details, fmt.Sprintf("Network matched: %s", n.String()))
 				break
 			}
 		}
-		if !netMatched {
+		if !found {
 			return false, nil
-		} else {
-			ruleDetails := describeNetworkMatch(rawRule)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeNetworkMatch(rawRule)...)
 	}
 
 	// Domain
 	if domain != "" && len(rule.Domain) > 0 {
 		var matchedEntry *router.Domain
-		domainMatched := false
 		for _, d := range rule.Domain {
 			if geo.MatchDomain(d, domain) {
 				matchedEntry = d
-				domainMatched = true
 				details = append(details, fmt.Sprintf("Domain matched [%s] %s", geo.DomainTypeName(d.Type), d.Value))
 				break
 			}
 		}
 
-		if !domainMatched {
+		if matchedEntry == nil {
 			return false, nil
-		} else if matchedEntry != nil {
-			ruleDetails := describeDomainMatch(rawRule, matchedEntry, geoSiteList, domain)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeDomainMatch(rawRule, matchedEntry, geoSiteList, domain)...)
 	}
 
 	// GeoIP (dest)
 	if destIP != nil && len(rule.Geoip) > 0 {
-		ipMatched := false
+		var matched bool
 		for _, g := range rule.Geoip {
 			for _, c := range g.Cidr {
 				if cidrContains(c, destIP) {
-					ipMatched = true
+					matched = true
 					details = append(details, fmt.Sprintf("Dest IP matched geoip:%s (%s/%d)", g.CountryCode, net.IP(c.Ip).String(), c.Prefix))
 					break
 				}
 			}
-			if ipMatched {
+			if matched {
 				break
 			}
 		}
-		if !ipMatched {
+		if !matched {
 			return false, nil
-		} else {
-			ruleDetails := describeGeoIPMatch(rawRule, "geoip")
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeGeoIPMatch(rawRule, "geoip")...)
 	}
 
 	// SourceGeoIP
 	if srcIP != nil && len(rule.SourceGeoip) > 0 {
-		srcMatched := false
+		var matched bool
 		for _, geoEntry := range rule.SourceGeoip {
 			for _, c := range geoEntry.Cidr {
 				if cidrContains(c, srcIP) {
-					srcMatched = true
+					matched = true
 					details = append(details, fmt.Sprintf("Source IP matched geoip:%s (%s/%d)", geoEntry.CountryCode, net.IP(c.Ip).String(), c.Prefix))
 					break
 				}
 			}
-			if srcMatched {
+			if matched {
 				break
 			}
 		}
-		if !srcMatched {
+		if !matched {
 			return false, nil
-		} else {
-			ruleDetails := describeGeoIPMatch(rawRule, "sourceGeoip")
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeGeoIPMatch(rawRule, "sourceGeoip")...)
 	}
 
 	// Port
@@ -194,22 +172,18 @@ func checkRuleMatch(
 		if err != nil {
 			return false, nil
 		}
-		portMatched := false
+		var matched bool
 		for _, r := range rule.PortList.Range {
 			if uint32(port) >= r.From && uint32(port) <= r.To {
-				portMatched = true
+				matched = true
 				details = append(details, fmt.Sprintf("Port matched: %d (range %d-%d)", port, r.From, r.To))
 				break
 			}
 		}
-		if !portMatched {
+		if !matched {
 			return false, nil
-		} else {
-			ruleDetails := describePortMatch(rawRule, false)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describePortMatch(rawRule, false)...)
 	}
 
 	// SourcePortList
@@ -222,22 +196,18 @@ func checkRuleMatch(
 		if err != nil {
 			return false, nil
 		}
-		portMatched := false
+		var matched bool
 		for _, r := range rule.SourcePortList.Range {
 			if uint32(port) >= r.From && uint32(port) <= r.To {
-				portMatched = true
+				matched = true
 				details = append(details, fmt.Sprintf("Source port matched: %d (range %d-%d)", port, r.From, r.To))
 				break
 			}
 		}
-		if !portMatched {
+		if !matched {
 			return false, nil
-		} else {
-			ruleDetails := describePortMatch(rawRule, true)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describePortMatch(rawRule, true)...)
 	}
 
 	// UserEmail
@@ -246,22 +216,18 @@ func checkRuleMatch(
 		if userEmail == "" {
 			return false, nil
 		}
-		userMatched := false
+		found := false
 		for _, u := range rule.UserEmail {
 			if u == userEmail {
-				userMatched = true
+				found = true
 				details = append(details, fmt.Sprintf("User email matched: %s", u))
 				break
 			}
 		}
-		if !userMatched {
+		if !found {
 			return false, nil
-		} else {
-			ruleDetails := describeUserEmailMatch(rawRule, userEmail)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeUserEmailMatch(rawRule, userEmail)...)
 	}
 
 	// Inbound tag
@@ -270,26 +236,21 @@ func checkRuleMatch(
 		if inboundTag == "" {
 			return false, nil
 		}
-		inboundTagMatched := false
+		found := false
 		for _, t := range rule.InboundTag {
 			if t == inboundTag {
-				inboundTagMatched = true
+				found = true
 				details = append(details, fmt.Sprintf("Inbound tag matched: %s", t))
 				break
 			}
 		}
-		if !inboundTagMatched {
+		if !found {
 			return false, nil
-		} else {
-			ruleDetails := describeInboundTagMatch(rawRule, inboundTag)
-			if len(ruleDetails) > 0 {
-				details = append(details, ruleDetails...)
-			}
 		}
+		details = append(details, describeInboundTagMatch(rawRule, inboundTag)...)
 	}
 
-	matched := len(details) > 0
-	return matched, details
+	return len(details) > 0, details
 }
 
 // cidrContains checks if an IP is contained within a CIDR block
@@ -390,13 +351,14 @@ func describeProtocolMatch(rawRule json.RawMessage, queryProtocol string) []stri
 
 	// Try to show original config value
 	var ruleMap map[string]interface{}
-	if err := json.Unmarshal(rawRule, &ruleMap); err == nil {
-		if protocols, ok := ruleMap["protocol"].([]interface{}); ok {
-			for _, item := range protocols {
-				if p, ok := item.(string); ok && strings.EqualFold(p, queryProtocol) {
-					lines = append(lines, fmt.Sprintf("From config protocol: %s", p))
-					break
-				}
+	if err := json.Unmarshal(rawRule, &ruleMap); err != nil {
+		return lines
+	}
+	if protocols, ok := ruleMap["protocol"].([]interface{}); ok {
+		for _, item := range protocols {
+			if p, ok := item.(string); ok && strings.EqualFold(p, queryProtocol) {
+				lines = append(lines, fmt.Sprintf("From config protocol: %s", p))
+				break
 			}
 		}
 	}

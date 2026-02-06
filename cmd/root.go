@@ -168,12 +168,12 @@ var simulateRouteCmd = &cobra.Command{
 	Use:   "simulate-route",
 	Short: "Simulate Xray routing decision for a domain or IP using config.json",
 	Run: func(cmd *cobra.Command, args []string) {
-		configPath := cmd.Flag("config").Value.String()
+		cfg := cmd.Flag("config").Value.String()
 		domain := cmd.Flag("domain").Value.String()
 		ipStr := cmd.Flag("ip").Value.String()
-		sourceIPStr := cmd.Flag("source-ip").Value.String()
+		srcIP := cmd.Flag("source-ip").Value.String()
 
-		if configPath == "" || (domain == "" && ipStr == "") {
+		if cfg == "" || (domain == "" && ipStr == "") {
 			fmt.Fprintln(os.Stderr, "Error: --config required + at least one of --domain or --ip")
 			cmd.Help()
 			os.Exit(1)
@@ -190,7 +190,7 @@ var simulateRouteCmd = &cobra.Command{
 		}
 
 		// Read config.json
-		data, err := os.ReadFile(configPath)
+		data, err := os.ReadFile(cfg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to read config file: %v\n", err)
 			os.Exit(1)
@@ -226,22 +226,20 @@ var simulateRouteCmd = &cobra.Command{
 		}
 
 		destIP := net.ParseIP(ipStr)
-		srcIP := net.ParseIP(sourceIPStr)
+		sourceIP := net.ParseIP(srcIP)
 
 		// Domain strategy handling: resolve domain when needed for IP-based strategies
 		var resolvedIPs []net.IP
 		ds := routerProto.DomainStrategy
-		if domain != "" {
-			if ds == router.Config_IpOnDemand {
-				ips, err := net.LookupIP(domain)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: DNS lookup failed for %s: %v\n", domain, err)
-				} else {
-					resolvedIPs = filterIPs(ips, preferIP)
-					if len(resolvedIPs) > 0 {
-						fmt.Printf("Domain strategy: IpOnDemand\n")
-						fmt.Printf("Resolved %s to: %v\n", domain, resolvedIPs)
-					}
+		if ds == router.Config_IpOnDemand && domain != "" {
+			ips, err := net.LookupIP(domain)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: DNS lookup failed for %s: %v\n", domain, err)
+			} else {
+				resolvedIPs = filterIPs(ips, preferIP)
+				if len(resolvedIPs) > 0 {
+					fmt.Printf("Domain strategy: IpOnDemand\n")
+					fmt.Printf("Resolved %s to: %v\n", domain, resolvedIPs)
 				}
 			}
 		}
@@ -262,11 +260,11 @@ var simulateRouteCmd = &cobra.Command{
 			}
 
 			// First try: normal match using domain (if present) and provided destIP
-			isMatch, details := checkRuleMatch(rule, rawRule, geositeList, domain, destIP, srcIP, cmd)
+			isMatch, details := checkRuleMatch(rule, rawRule, geositeList, domain, destIP, sourceIP, cmd)
 			if !isMatch && domain != "" && ds == router.Config_IpOnDemand && len(resolvedIPs) > 0 {
 				// For IPOnDemand: if not matched by domain-only, try matching using resolved IPs
 				for _, rip := range resolvedIPs {
-					isMatch, details = checkRuleMatch(rule, rawRule, geositeList, "", rip, srcIP, cmd)
+					isMatch, details = checkRuleMatch(rule, rawRule, geositeList, "", rip, sourceIP, cmd)
 					if isMatch {
 						fmt.Printf("\n→ Falling back to IP-based match (IpOnDemand): %s\n", rip.String())
 						break
@@ -328,67 +326,67 @@ var simulateRouteCmd = &cobra.Command{
 				if len(filteredIPs) > 0 {
 					fmt.Printf("Domain strategy: IpIfNonMatch\n")
 					fmt.Printf("No domain match found, resolving %s to: %v\n", domain, filteredIPs)
-				}
-				for _, rip := range filteredIPs {
-					for i, rule := range routerProto.Rule {
-						var rawRule json.RawMessage
-						if i < len(rawRules) {
-							rawRule = rawRules[i]
-						}
-
-						// Skip rules that require specific inboundTag if we didn't provide one or it doesn't match
-						if len(rule.InboundTag) > 0 {
-							providedTag := cmd.Flag("inbound-tag").Value.String()
-							if providedTag == "" || !contains(rule.InboundTag, providedTag) {
-								continue // this rule requires specific inbound → skip if not matching
-							}
-						}
-
-						isMatch, details := checkRuleMatch(rule, rawRule, geositeList, "", rip, srcIP, cmd)
-						if isMatch {
-							matched = true
-							fmt.Printf("\n→ Matched rule #%d using resolved IP %s (IpIfNonMatch):\n", i+1, rip.String())
-							for _, detail := range details {
-								fmt.Printf("  • %s\n", detail)
+					for _, rip := range filteredIPs {
+						for i, rule := range routerProto.Rule {
+							var rawRule json.RawMessage
+							if i < len(rawRules) {
+								rawRule = rawRules[i]
 							}
 
-							// Handle the target (outbound or balancer)
-							switch target := rule.TargetTag.(type) {
-							case *router.RoutingRule_Tag:
-								fmt.Printf("→ Outbound tag: %s\n", target.Tag)
+							// Skip rules that require specific inboundTag if we didn't provide one or it doesn't match
+							if len(rule.InboundTag) > 0 {
+								providedTag := cmd.Flag("inbound-tag").Value.String()
+								if providedTag == "" || !contains(rule.InboundTag, providedTag) {
+									continue // this rule requires specific inbound → skip if not matching
+								}
+							}
 
-							case *router.RoutingRule_BalancingTag:
-								balancerTag := target.BalancingTag
-								fmt.Printf("→ Balancer tag: %s\n", balancerTag)
+							isMatch, details := checkRuleMatch(rule, rawRule, geositeList, "", rip, sourceIP, cmd)
+							if isMatch {
+								matched = true
+								fmt.Printf("\n→ Matched rule #%d using resolved IP %s (IpIfNonMatch):\n", i+1, rip.String())
+								for _, detail := range details {
+									fmt.Printf("  • %s\n", detail)
+								}
 
-								// Find and show balancer details from original config
-								foundBalancer := false
-								for _, bal := range routerCfg.Balancers {
-									if bal.Tag == balancerTag {
-										foundBalancer = true
-										fmt.Printf("  Strategy: %s\n", bal.Strategy.Type)
-										if len(bal.Selectors) > 0 {
-											fmt.Printf("  Candidates: %s\n", strings.Join(bal.Selectors, ", "))
+								// Handle the target (outbound or balancer)
+								switch target := rule.TargetTag.(type) {
+								case *router.RoutingRule_Tag:
+									fmt.Printf("→ Outbound tag: %s\n", target.Tag)
+
+								case *router.RoutingRule_BalancingTag:
+									balancerTag := target.BalancingTag
+									fmt.Printf("→ Balancer tag: %s\n", balancerTag)
+
+									// Find and show balancer details from original config
+									foundBalancer := false
+									for _, bal := range routerCfg.Balancers {
+										if bal.Tag == balancerTag {
+											foundBalancer = true
+											fmt.Printf("  Strategy: %s\n", bal.Strategy.Type)
+											if len(bal.Selectors) > 0 {
+												fmt.Printf("  Candidates: %s\n", strings.Join(bal.Selectors, ", "))
+											}
+											if bal.FallbackTag != "" {
+												fmt.Printf("  Fallback: %s\n", bal.FallbackTag)
+											}
+											break
 										}
-										if bal.FallbackTag != "" {
-											fmt.Printf("  Fallback: %s\n", bal.FallbackTag)
-										}
-										break
 									}
-								}
-								if !foundBalancer {
-									fmt.Printf("  (balancer definition not found in config)\n")
+									if !foundBalancer {
+										fmt.Printf("  (balancer definition not found in config)\n")
+									}
+
+								default:
+									fmt.Println("→ No target tag or balancer specified in this rule")
 								}
 
-							default:
-								fmt.Println("→ No target tag or balancer specified in this rule")
+								break // first-match semantics
 							}
-
-							break // first-match semantics
 						}
-					}
-					if matched {
-						break
+						if matched {
+							break
+						}
 					}
 				}
 			}
