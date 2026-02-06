@@ -1,0 +1,146 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      matrix:
+        include:
+          - os: Windows
+            runs-on: windows-latest
+            goos: windows
+            goarch: amd64
+            binary-name: geodbq.exe
+            archive-name: geodbq-windows-amd64
+            
+          - os: macOS (Universal)
+            runs-on: macos-latest
+            goos: darwin
+            build-universal: true
+            archive-name: geodbq-macos-universal
+            
+          - os: Linux (x86_64)
+            runs-on: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            binary-name: geodbq
+            archive-name: geodbq-linux-amd64
+            
+          - os: Linux (ARM64)
+            runs-on: ubuntu-latest
+            goos: linux
+            goarch: arm64
+            binary-name: geodbq
+            archive-name: geodbq-linux-arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref }}" 
+            VERSION="${VERSION#refs/tags/v}"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev" >> $GITHUB_OUTPUT
+          fi
+        shell: bash
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.25.6'
+
+      - name: Build binary (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          go build -o ${{ matrix.binary-name }} -ldflags="-s -w" .
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+
+      - name: Build binary (Linux)
+        if: matrix.goos == 'linux'
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o ${{ matrix.binary-name }} -ldflags="-s -w" .
+          file ${{ matrix.binary-name }}
+
+      - name: Build universal binary (macOS)
+        if: matrix.build-universal == true
+        run: |
+          # Build for both architectures
+          GOOS=darwin GOARCH=amd64 go build -o geodbq-amd64 -ldflags="-s -w" .
+          GOOS=darwin GOARCH=arm64 go build -o geodbq-arm64 -ldflags="-s -w" .
+          
+          # Create universal binary
+          lipo -create geodbq-amd64 geodbq-arm64 -output geodbq
+          file geodbq
+          
+          # Clean up architecture-specific binaries
+          rm geodbq-amd64 geodbq-arm64
+
+      - name: Prepare release archive (Windows)
+        if: matrix.goos == 'windows'
+        run: |
+          mkdir -p release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
+          cp geodbq.exe release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
+          cp geoip.dat geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 2>/dev/null || true
+          cd release
+          7z a ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
+          rm -r ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
+        shell: pwsh
+
+      - name: Prepare release archive (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          mkdir -p release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
+          if [ "${{ matrix.build-universal }}" = "true" ]; then
+            cp geodbq release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
+          else
+            cp ${{ matrix.binary-name }} release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/geodbq
+          fi
+          cp geoip.dat geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 2>/dev/null || true
+          chmod +x release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/geodbq
+          cd release
+          tar -czf ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
+          rm -r ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
+        shell: bash
+
+      - name: Generate checksums
+        run: |
+          cd release
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            certutil -hashfile ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip SHA256 | findstr /v "SHA256" > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip.sha256
+          else
+            shasum -a 256 ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256
+          fi
+        shell: bash
+
+      - name: Upload release artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+
+      - name: Upload build artifacts (workflow dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive-name }}
+          path: release/
+          retention-days: 7
