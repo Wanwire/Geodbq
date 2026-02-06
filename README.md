@@ -1,6 +1,6 @@
 # geodbq
 
-A lightweight command-line tool to inspect and query `geoip.dat` and `geosite.dat` files used by **Xray-core** (XTLS fork).
+A lightweight command-line tool to inspect and query `geoip.dat` and `geosite.dat` files used by **Xray-core**.
 
 It allows you to:
 
@@ -10,11 +10,8 @@ It allows you to:
 - Summarize file contents (entry count, rule count, top categories)
 - List the actual CIDRs or domain rules for any specific country/category
 
-Uses the real protobuf structures from `github.com/xtls/xray-core` for maximum compatibility.
-
 ## Features
 
-- Default lookup of `./geoip.dat` and `./geosite.dat` (no path needed most of the time)
 - Case-insensitive domain matching
 - Proper prefix clamping for invalid CIDR entries
 - Real Xray-style domain matching (`plain`, `regex`, `domain`, `full`)
@@ -49,16 +46,18 @@ go install github.com/wanwire/geodbq@latest
 geodbq [flags] [command]
 
 Commands:
-  ip <ADDRESS>            Query country code(s) for an IP
-  domain <DOMAIN>         Query matching geosite categories for a domain
-  list-categories         List all available country codes / categories
-  summarize               Show summary statistics for geoip.dat and/or geosite.dat
-  list-rules <CATEGORY>   List rules (CIDRs or domains) for a country/category
+  domain          Query matching geosite categories for a domain
+  help            Help about any command
+  ip              Query country code(s) for an IP
+  list-categories List all available country codes / categories
+  list-rules      List rules (CIDRs or domains) for a specific country code / category
+  simulate-route  Simulate Xray routing decision for a domain or IP using config.json
+  summarize       Show summary statistics for geoip.dat and/or geosite.dat
 
 Flags:
-  --geoip string     Path to geoip.dat (default "./geoip.dat")
-  --geosite string   Path to geosite.dat (default "./geosite.dat")
-  -h, --help         help for geodbq
+      --geoip string     Path to geoip.dat (default: ./geoip.dat)
+      --geosite string   Path to geosite.dat (default: ./geosite.dat)
+  -h, --help             help for geodbq
 ```
 
 ## Examples
@@ -181,7 +180,10 @@ Fallback tag: direct
 
 - Country codes in geoip.dat are usually uppercase (e.g. US, CN).
 - Geosite category names are case-sensitive in Xray but the tool uses case-insensitive matching for convenience.
-- Very large categories (cn, geolocation-!cn, gfw) may contain thousands of entries — use --max-show or redirect to file:Bashgeodbq list-rules cn > cn-rules.txt
+- Very large categories (cn, geolocation-!cn, gfw) may contain thousands of entries — use --max-show or redirect to file:
+```bash
+geodbq list-rules cn > cn-rules.txt
+```
 - The tool clamps invalid CIDR prefixes (e.g. IPv4 /127 → /32) to avoid parsing errors, matching common real-world .dat file quirks.
 
 ### Notes on Simulation
