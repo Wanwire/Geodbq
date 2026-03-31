@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/spf13/cobra"
 	"github.com/wanwire/geodbq/internal/geo"
@@ -24,6 +25,7 @@ var (
 	configPath  string
 	sourceIPStr string
 	preferIP    string
+	outputLang  string
 )
 
 var rootCmd = &cobra.Command{
@@ -141,11 +143,16 @@ var summarizeCmd = &cobra.Command{
 
 var extractCmd = &cobra.Command{
 	Use:   "extract",
-	Short: "Output the Go structure of conf.Config using reflection",
+	Short: "Output the structure of conf.Config using reflection",
 	Run: func(cmd *cobra.Command, args []string) {
 		t := reflect.TypeOf(conf.Config{})
-		code := generateFullStructCode(t)
-		fmt.Print(code)
+		if outputLang == "swift" || outputLang == "s" {
+			code := generateSwiftStructCode(t)
+			fmt.Print(code)
+		} else {
+			code := generateFullStructCode(t)
+			fmt.Print(code)
+		}
 	},
 }
 
@@ -433,6 +440,8 @@ func init() {
 	simulateRouteCmd.Flags().String("network", "", "Network (tcp, udp)")
 	simulateRouteCmd.Flags().String("user-email", "", "User email for matching")
 
+	extractCmd.Flags().StringVar(&outputLang, "lang", "golang", "Output language: golang, go, swift, s")
+
 	rootCmd.AddCommand(queryIPCmd)
 	rootCmd.AddCommand(queryDomainCmd)
 	rootCmd.AddCommand(listCategoriesCmd)
@@ -672,6 +681,322 @@ func generateSingleStruct(t reflect.Type) string {
 	}
 
 	lines = append(lines, "}")
+
+	return strings.Join(lines, "\n")
+}
+
+func toCamelCase(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	result := strings.Builder{}
+	upperNext := false
+	for _, r := range s {
+		if r == '_' || r == '-' {
+			upperNext = true
+			continue
+		}
+		if upperNext {
+			result.WriteRune(unicode.ToUpper(r))
+			upperNext = false
+		} else {
+			result.WriteRune(r)
+		}
+	}
+	return result.String()
+}
+
+func needsSwiftCodingKeys(t reflect.Type) bool {
+	var structType reflect.Type
+	if t.Kind() == reflect.Ptr {
+		structType = t.Elem()
+	} else {
+		structType = t
+	}
+
+	if structType.Kind() != reflect.Struct {
+		return false
+	}
+
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+		jsonTag := field.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		tagValue := strings.Split(jsonTag, ",")[0]
+		camelName := toCamelCase(tagValue)
+		if camelName != tagValue {
+			return true
+		}
+	}
+	return false
+}
+
+func swiftTypeToString(t reflect.Type) string {
+	if t.PkgPath() == "encoding/json" && t.Name() == "RawMessage" {
+		return "AnyCodable"
+	}
+
+	if t.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && t.Name() == "Duration" {
+		return "Int64"
+	}
+
+	switch t.Kind() {
+	case reflect.Ptr:
+		inner := t.Elem()
+		if inner.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && inner.Name() == "Duration" {
+			return "Int64?"
+		}
+		return swiftTypeToString(inner) + "?"
+	case reflect.Slice:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "[AnyCodable]"
+		}
+		elem := t.Elem()
+		if elem.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && elem.Name() == "Duration" {
+			return "[Int64]"
+		}
+		return "[" + swiftTypeToString(elem) + "]"
+	case reflect.Map:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "[String: AnyCodable]"
+		}
+		return "[" + swiftTypeToString(t.Key()) + ": " + swiftTypeToString(t.Elem()) + "]"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return "Int64"
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "UInt64"
+	case reflect.Float32, reflect.Float64:
+		return "Double"
+	case reflect.Bool:
+		return "Bool"
+	case reflect.String:
+		return "String"
+	case reflect.Interface:
+		return "Any?"
+	default:
+		return t.Name()
+	}
+}
+
+func generateSwiftStructCode(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	typeQueue := []reflect.Type{t}
+	typeOrder := []reflect.Type{}
+	visited := make(map[string]bool)
+
+	for len(typeQueue) > 0 {
+		current := typeQueue[0]
+		typeQueue = typeQueue[1:]
+
+		typeName := current.Name()
+		if typeName == "" {
+			continue
+		}
+		if visited[typeName] {
+			continue
+		}
+		visited[typeName] = true
+		typeOrder = append(typeOrder, current)
+
+		for i := 0; i < current.NumField(); i++ {
+			field := current.Field(i)
+			fieldType := field.Type
+
+			var fieldTypeName string
+			if fieldType.Kind() == reflect.Ptr {
+				fieldTypeName = fieldType.Elem().Name()
+			} else {
+				fieldTypeName = fieldType.Name()
+			}
+
+			if fieldType.Kind() == reflect.Ptr {
+				if fieldType.Elem().Kind() == reflect.Struct {
+					elemType := fieldType.Elem()
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType) {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+				continue
+			}
+
+			if fieldTypeName != "" && !visited[fieldTypeName] {
+				if fieldType.Kind() == reflect.Struct && !isOpaqueType(fieldType) {
+					typeQueue = append(typeQueue, fieldType)
+				}
+			}
+
+			if fieldType.Kind() == reflect.Slice {
+				elemType := fieldType.Elem()
+				if elemType.Kind() == reflect.Ptr && elemType.Elem().Kind() == reflect.Struct {
+					elemTypeName := elemType.Elem().Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType.Elem()) {
+						typeQueue = append(typeQueue, elemType.Elem())
+					}
+				} else if elemType.Kind() == reflect.Struct && !isOpaqueType(elemType) {
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+			}
+
+			if fieldType.Kind() == reflect.Map {
+				valueType := fieldType.Elem()
+				if valueType.Kind() == reflect.Ptr && valueType.Elem().Kind() == reflect.Struct {
+					valueTypeName := valueType.Elem().Name()
+					if valueTypeName != "" && !visited[valueTypeName] && !isOpaqueType(valueType.Elem()) {
+						typeQueue = append(typeQueue, valueType.Elem())
+					}
+				} else if valueType.Kind() == reflect.Struct && !isOpaqueType(valueType) {
+					valueTypeName := valueType.Name()
+					if valueTypeName != "" && !visited[valueTypeName] {
+						typeQueue = append(typeQueue, valueType)
+					}
+				}
+			}
+		}
+	}
+
+	var lines []string
+
+	lines = append(lines, "struct AnyCodable: Codable, @unchecked Sendable {")
+	lines = append(lines, "    let value: Any?")
+	lines = append(lines, "")
+	lines = append(lines, "    init(_ value: Any?) { self.value = value }")
+	lines = append(lines, "")
+	lines = append(lines, "    init(from decoder: Decoder) throws {")
+	lines = append(lines, "        let container = try decoder.singleValueContainer()")
+	lines = append(lines, "")
+	lines = append(lines, "        if container.decodeNil() { value = nil }")
+	lines = append(lines, "        else if let v = try? container.decode(Bool.self) { value = v }")
+	lines = append(lines, "        else if let v = try? container.decode(Int.self) { value = v }")
+	lines = append(lines, "        else if let v = try? container.decode(Double.self) { value = v }")
+	lines = append(lines, "        else if let v = try? container.decode(String.self) { value = v }")
+	lines = append(lines, "        else if let v = try? container.decode([String: AnyCodable].self) {")
+	lines = append(lines, "            value = v.mapValues { $0.value }")
+	lines = append(lines, "        }")
+	lines = append(lines, "        else if let v = try? container.decode([AnyCodable].self) {")
+	lines = append(lines, "            value = v.map { $0.value }")
+	lines = append(lines, "        }")
+	lines = append(lines, "        else {")
+	lines = append(lines, "            throw DecodingError.dataCorruptedError(in: container, debugDescription: \"Unsupported JSON value\")")
+	lines = append(lines, "        }")
+	lines = append(lines, "    }")
+	lines = append(lines, "")
+	lines = append(lines, "    func encode(to encoder: Encoder) throws {")
+	lines = append(lines, "        var container = encoder.singleValueContainer()")
+	lines = append(lines, "")
+	lines = append(lines, "        switch value {")
+	lines = append(lines, "        case nil:")
+	lines = append(lines, "            try container.encodeNil()")
+	lines = append(lines, "        case let v as Bool:")
+	lines = append(lines, "            try container.encode(v)")
+	lines = append(lines, "        case let v as Int:")
+	lines = append(lines, "            try container.encode(v)")
+	lines = append(lines, "        case let v as Double:")
+	lines = append(lines, "            try container.encode(v)")
+	lines = append(lines, "        case let v as String:")
+	lines = append(lines, "            try container.encode(v)")
+	lines = append(lines, "        case let v as [String: Any]:")
+	lines = append(lines, "            try container.encode(v.mapValues { AnyCodable($0) })")
+	lines = append(lines, "        case let v as [Any]:")
+	lines = append(lines, "            try container.encode(v.map { AnyCodable($0) })")
+	lines = append(lines, "        default:")
+	lines = append(lines, "            throw EncodingError.invalidValue(value as Any, .init(codingPath: container.codingPath, debugDescription: \"Unsupported JSON value\"))")
+	lines = append(lines, "        }")
+	lines = append(lines, "    }")
+	lines = append(lines, "}")
+	lines = append(lines, "")
+
+	for _, structType := range typeOrder {
+		lines = append(lines, generateSingleSwiftStruct(structType))
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func generateSingleSwiftStruct(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, "struct "+t.Name()+" {")
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+
+		jsonTag := field.Tag.Get("json")
+		fieldType := field.Type
+
+		typeStr := swiftTypeToString(fieldType)
+
+		if jsonTag == "" || jsonTag == "-" {
+			if isOpaqueType(fieldType) {
+				lines = append(lines, fmt.Sprintf("    let %s: AnyCodable?", field.Name))
+			} else {
+				lines = append(lines, fmt.Sprintf("    let %s: %s?", field.Name, typeStr))
+			}
+			continue
+		}
+
+		tagValue := strings.Split(jsonTag, ",")[0]
+		fieldName := tagValue
+
+		if isOpaqueType(fieldType) {
+			lines = append(lines, fmt.Sprintf("    let %s: AnyCodable?", fieldName))
+			continue
+		}
+
+		optionalSuffix := ""
+		if !strings.HasSuffix(typeStr, "?") {
+			optionalSuffix = "?"
+		}
+		lines = append(lines, fmt.Sprintf("    let %s: %s%s", fieldName, typeStr, optionalSuffix))
+	}
+
+	lines = append(lines, "}")
+	lines = append(lines, "")
+
+	if needsSwiftCodingKeys(t) {
+		lines = append(lines, "extension "+t.Name()+": Codable, Sendable {")
+		lines = append(lines, "    private enum CodingKeys: String, CodingKey {")
+
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+
+			jsonTag := field.Tag.Get("json")
+			if jsonTag == "" || jsonTag == "-" {
+				continue
+			}
+
+			tagValue := strings.Split(jsonTag, ",")[0]
+			fieldName := tagValue
+
+			lines = append(lines, fmt.Sprintf("        case %s = \"%s\"", fieldName, tagValue))
+		}
+
+		lines = append(lines, "    }")
+		lines = append(lines, "}")
+	} else {
+		lines = append(lines, "extension "+t.Name()+": Codable, Sendable {}")
+	}
 
 	return strings.Join(lines, "\n")
 }
