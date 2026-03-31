@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -135,6 +136,16 @@ var summarizeCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "geosite summary skipped: %v\n", err)
 			}
 		}
+	},
+}
+
+var extractCmd = &cobra.Command{
+	Use:   "extract",
+	Short: "Output the Go structure of conf.Config using reflection",
+	Run: func(cmd *cobra.Command, args []string) {
+		t := reflect.TypeOf(conf.Config{})
+		code := generateFullStructCode(t)
+		fmt.Print(code)
 	},
 }
 
@@ -428,6 +439,7 @@ func init() {
 	rootCmd.AddCommand(summarizeCmd)
 	rootCmd.AddCommand(listRulesCmd)
 	rootCmd.AddCommand(simulateRouteCmd)
+	rootCmd.AddCommand(extractCmd)
 }
 
 func Execute() {
@@ -435,4 +447,231 @@ func Execute() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func typeToString(t reflect.Type) string {
+	if t.PkgPath() == "encoding/json" && t.Name() == "RawMessage" {
+		return "json.RawMessage"
+	}
+
+	if t.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && t.Name() == "Duration" {
+		return "duration.Duration"
+	}
+
+	switch t.Kind() {
+	case reflect.Ptr:
+		inner := t.Elem()
+		if inner.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && inner.Name() == "Duration" {
+			return "*duration.Duration"
+		}
+		return "*" + typeToString(inner)
+	case reflect.Slice:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "json.RawMessage"
+		}
+		elem := t.Elem()
+		if elem.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && elem.Name() == "Duration" {
+			return "[]duration.Duration"
+		}
+		return "[]" + typeToString(elem)
+	case reflect.Map:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "map[" + typeToString(t.Key()) + "]json.RawMessage"
+		}
+		return "map[" + typeToString(t.Key()) + "]" + typeToString(t.Elem())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return "int"
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "uint"
+	case reflect.Float32, reflect.Float64:
+		return "float64"
+	case reflect.Bool:
+		return "bool"
+	case reflect.String:
+		return "string"
+	case reflect.Interface:
+		return "interface{}"
+	default:
+		return t.Name()
+	}
+}
+
+func isOpaqueType(t reflect.Type) bool {
+	var structType reflect.Type
+	if t.Kind() == reflect.Ptr {
+		structType = t.Elem()
+	} else {
+		structType = t
+	}
+
+	if structType.Kind() != reflect.Struct {
+		return false
+	}
+
+	publicFieldCount := 0
+	hasJsonTagOnPublic := false
+
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		if field.PkgPath == "" {
+			publicFieldCount++
+			if field.Tag.Get("json") != "" && field.Tag.Get("json") != "-" {
+				hasJsonTagOnPublic = true
+			}
+		}
+	}
+
+	if publicFieldCount == 0 {
+		return true
+	}
+	return !hasJsonTagOnPublic
+}
+
+func generateFullStructCode(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	typeQueue := []reflect.Type{t}
+	typeOrder := []reflect.Type{}
+	visited := make(map[string]bool)
+	usedDuration := false
+
+	for len(typeQueue) > 0 {
+		current := typeQueue[0]
+		typeQueue = typeQueue[1:]
+
+		typeName := current.Name()
+		if typeName == "" {
+			continue
+		}
+		if visited[typeName] {
+			continue
+		}
+		visited[typeName] = true
+		typeOrder = append(typeOrder, current)
+
+		for i := 0; i < current.NumField(); i++ {
+			field := current.Field(i)
+			fieldType := field.Type
+
+			var fieldTypeName string
+			if fieldType.Kind() == reflect.Ptr {
+				fieldTypeName = fieldType.Elem().Name()
+			} else {
+				fieldTypeName = fieldType.Name()
+			}
+
+			if fieldTypeName == "Duration" {
+				usedDuration = true
+			}
+
+			if fieldType.Kind() == reflect.Ptr {
+				if fieldType.Elem().Kind() == reflect.Struct {
+					elemType := fieldType.Elem()
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType) {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+				continue
+			}
+
+			if fieldTypeName != "" && !visited[fieldTypeName] {
+				if fieldType.Kind() == reflect.Struct && !isOpaqueType(fieldType) {
+					typeQueue = append(typeQueue, fieldType)
+				}
+			}
+
+			if fieldType.Kind() == reflect.Slice {
+				elemType := fieldType.Elem()
+				if elemType.Kind() == reflect.Ptr && elemType.Elem().Kind() == reflect.Struct {
+					elemTypeName := elemType.Elem().Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType.Elem()) {
+						typeQueue = append(typeQueue, elemType.Elem())
+					}
+				} else if elemType.Kind() == reflect.Struct && !isOpaqueType(elemType) {
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+			}
+
+			if fieldType.Kind() == reflect.Map {
+				valueType := fieldType.Elem()
+				if valueType.Kind() == reflect.Ptr && valueType.Elem().Kind() == reflect.Struct {
+					valueTypeName := valueType.Elem().Name()
+					if valueTypeName != "" && !visited[valueTypeName] && !isOpaqueType(valueType.Elem()) {
+						typeQueue = append(typeQueue, valueType.Elem())
+					}
+				} else if valueType.Kind() == reflect.Struct && !isOpaqueType(valueType) {
+					valueTypeName := valueType.Name()
+					if valueTypeName != "" && !visited[valueTypeName] {
+						typeQueue = append(typeQueue, valueType)
+					}
+				}
+			}
+		}
+	}
+
+	var lines []string
+
+	lines = append(lines, "package main")
+	lines = append(lines, "")
+	lines = append(lines, "import (")
+	lines = append(lines, "  \"encoding/json\"")
+	if usedDuration {
+		lines = append(lines, "  \"github.com/xtls/xray-core/infra/conf/cfgcommon/duration\"")
+	}
+	lines = append(lines, ")")
+	lines = append(lines, "")
+
+	for _, structType := range typeOrder {
+		lines = append(lines, generateSingleStruct(structType))
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func generateSingleStruct(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, "type "+t.Name()+" struct {")
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+
+		jsonTag := field.Tag.Get("json")
+		fieldType := field.Type
+
+		typeStr := typeToString(fieldType)
+
+		if jsonTag == "" || jsonTag == "-" {
+			if isOpaqueType(fieldType) {
+				lines = append(lines, fmt.Sprintf("  %s json.RawMessage", field.Name))
+			} else {
+				lines = append(lines, fmt.Sprintf("  %s %s", field.Name, typeStr))
+			}
+			continue
+		}
+
+		if isOpaqueType(fieldType) {
+			lines = append(lines, fmt.Sprintf("  %s json.RawMessage `json:\"%s\"`", field.Name, jsonTag))
+			continue
+		}
+
+		lines = append(lines, fmt.Sprintf("  %s %s `json:\"%s\"`", field.Name, typeStr, jsonTag))
+	}
+
+	lines = append(lines, "}")
+
+	return strings.Join(lines, "\n")
 }
