@@ -97,7 +97,8 @@ jobs:
         run: |
           mkdir -p release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
           cp geodbq.exe release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
-          cp geoip.dat geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 2>/dev/null || true
+          cp geoip.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 
+          cp geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 
           cd release
           7z a ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
           rm -r ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
@@ -119,42 +120,47 @@ jobs:
           rm -r ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
         shell: bash
 
-      - name: Generate checksums
+      - name: Generate checksums (Windows)
+        if: matrix.goos == 'windows'
         run: |
           cd release
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            certutil -hashfile ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip SHA256 | findstr /v "SHA256" > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip.sha256
-          else
-            shasum -a 256 ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256
-          fi
+          $hash = (certutil -hashfile ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip SHA256 | Select-String -Pattern "^[A-Fa-f0-9]{64}$").Line
+          $hash | Out-File -FilePath ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip.sha256
+        shell: pwsh
+
+      - name: Generate checksums (Unix)
+        if: matrix.goos != 'windows'
+        run: |
+          cd release
+          shasum -a 256 ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256
         shell: bash
 
       - name: Create release
         if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
+        run: gh release create "${{ github.ref_name }}" --generate-notes --draft=false --prerelease=false
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all artifacts
+        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/download-artifact@v6
+        with:
+          path: downloaded
+
+      - name: Upload to release
+        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --generate-notes \
-            --draft=false \
-            --prerelease=false
+          Get-ChildItem -Path downloaded -Recurse -File | ForEach-Object {
+            gh release upload "${{ github.ref_name }}" $_.FullName --clobber
+          }
+        shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload release artifacts
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          cd release
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            gh release upload "${{ github.ref_name }}" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip.sha256" \
-              --clobber
-          else
-            gh release upload "${{ github.ref_name }}" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256" \
-              --clobber
-          fi
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.archive-name }}
+          path: release/
 
