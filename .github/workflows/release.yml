@@ -97,7 +97,8 @@ jobs:
         run: |
           mkdir -p release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
           cp geodbq.exe release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
-          cp geoip.dat geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 2>/dev/null || true
+          cp geoip.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 
+          cp geosite.dat release/${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/ 
           cd release
           7z a ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}/
           rm -r ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}
@@ -139,22 +140,27 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload release artifacts
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Download all artifacts
+        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/download-artifact@v6
+        with:
+          path: downloaded
+
+      - name: Upload to release
+        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
         run: |
-          cd release
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            gh release upload "${{ github.ref_name }}" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.zip.sha256" \
-              --clobber
-          else
-            gh release upload "${{ github.ref_name }}" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz" \
-              "${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256" \
-              --clobber
-          fi
+          for dir in downloaded/*/; do
+            for file in "$dir"*; do
+              [ -f "$file" ] && gh release upload "${{ github.ref_name }}" "$file" --clobber
+            done
+          done
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.archive-name }}
+          path: release/
 
