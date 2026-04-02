@@ -149,6 +149,9 @@ var extractCmd = &cobra.Command{
 		if outputLang == "swift" || outputLang == "s" {
 			code := generateSwiftStructCode(t)
 			fmt.Print(code)
+		} else if outputLang == "kotlin" || outputLang == "k" {
+			code := generateKotlinStructCode(t)
+			fmt.Print(code)
 		} else {
 			code := generateFullStructCode(t)
 			fmt.Print(code)
@@ -440,7 +443,7 @@ func init() {
 	simulateRouteCmd.Flags().String("network", "", "Network (tcp, udp)")
 	simulateRouteCmd.Flags().String("user-email", "", "User email for matching")
 
-	extractCmd.Flags().StringVar(&outputLang, "lang", "golang", "Output language: golang, go, swift, s")
+	extractCmd.Flags().StringVar(&outputLang, "lang", "golang", "Output language: golang, go, swift, s, kotlin, k")
 
 	rootCmd.AddCommand(queryIPCmd)
 	rootCmd.AddCommand(queryDomainCmd)
@@ -997,6 +1000,270 @@ func generateSingleSwiftStruct(t reflect.Type) string {
 	} else {
 		lines = append(lines, "extension "+t.Name()+": Codable, Sendable {}")
 	}
+
+	return strings.Join(lines, "\n")
+}
+
+func kotlinTypeToString(t reflect.Type) string {
+	if t.PkgPath() == "encoding/json" && t.Name() == "RawMessage" {
+		return "AnyCodable"
+	}
+
+	if t.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && t.Name() == "Duration" {
+		return "Long"
+	}
+
+	switch t.Kind() {
+	case reflect.Ptr:
+		inner := t.Elem()
+		if inner.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && inner.Name() == "Duration" {
+			return "Long?"
+		}
+		return kotlinTypeToString(inner) + "?"
+	case reflect.Slice:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "List<AnyCodable>"
+		}
+		elem := t.Elem()
+		if elem.PkgPath() == "github.com/xtls/xray-core/infra/conf/cfgcommon/duration" && elem.Name() == "Duration" {
+			return "List<Long>"
+		}
+		return "List<" + kotlinTypeToString(elem) + ">"
+	case reflect.Map:
+		if t.Elem().PkgPath() == "encoding/json" && t.Elem().Name() == "RawMessage" {
+			return "Map<String, AnyCodable>"
+		}
+		return "Map<" + kotlinTypeToString(t.Key()) + ", " + kotlinTypeToString(t.Elem()) + ">"
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return "Long"
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "Long"
+	case reflect.Float32, reflect.Float64:
+		return "Double"
+	case reflect.Bool:
+		return "Boolean"
+	case reflect.String:
+		return "String"
+	case reflect.Interface:
+		return "Any?"
+	default:
+		return t.Name()
+	}
+}
+
+func generateKotlinStructCode(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	typeQueue := []reflect.Type{t}
+	typeOrder := []reflect.Type{}
+	visited := make(map[string]bool)
+
+	for len(typeQueue) > 0 {
+		current := typeQueue[0]
+		typeQueue = typeQueue[1:]
+
+		typeName := current.Name()
+		if typeName == "" {
+			continue
+		}
+		if visited[typeName] {
+			continue
+		}
+		visited[typeName] = true
+		typeOrder = append(typeOrder, current)
+
+		for i := 0; i < current.NumField(); i++ {
+			field := current.Field(i)
+			fieldType := field.Type
+
+			var fieldTypeName string
+			if fieldType.Kind() == reflect.Ptr {
+				fieldTypeName = fieldType.Elem().Name()
+			} else {
+				fieldTypeName = fieldType.Name()
+			}
+
+			if fieldType.Kind() == reflect.Ptr {
+				if fieldType.Elem().Kind() == reflect.Struct {
+					elemType := fieldType.Elem()
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType) {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+				continue
+			}
+
+			if fieldTypeName != "" && !visited[fieldTypeName] {
+				if fieldType.Kind() == reflect.Struct && !isOpaqueType(fieldType) {
+					typeQueue = append(typeQueue, fieldType)
+				}
+			}
+
+			if fieldType.Kind() == reflect.Slice {
+				elemType := fieldType.Elem()
+				if elemType.Kind() == reflect.Ptr && elemType.Elem().Kind() == reflect.Struct {
+					elemTypeName := elemType.Elem().Name()
+					if elemTypeName != "" && !visited[elemTypeName] && !isOpaqueType(elemType.Elem()) {
+						typeQueue = append(typeQueue, elemType.Elem())
+					}
+				} else if elemType.Kind() == reflect.Struct && !isOpaqueType(elemType) {
+					elemTypeName := elemType.Name()
+					if elemTypeName != "" && !visited[elemTypeName] {
+						typeQueue = append(typeQueue, elemType)
+					}
+				}
+			}
+
+			if fieldType.Kind() == reflect.Map {
+				valueType := fieldType.Elem()
+				if valueType.Kind() == reflect.Ptr && valueType.Elem().Kind() == reflect.Struct {
+					valueTypeName := valueType.Elem().Name()
+					if valueTypeName != "" && !visited[valueTypeName] && !isOpaqueType(valueType.Elem()) {
+						typeQueue = append(typeQueue, valueType.Elem())
+					}
+				} else if valueType.Kind() == reflect.Struct && !isOpaqueType(valueType) {
+					valueTypeName := valueType.Name()
+					if valueTypeName != "" && !visited[valueTypeName] {
+						typeQueue = append(typeQueue, valueType)
+					}
+				}
+			}
+		}
+	}
+
+	var lines []string
+
+	lines = append(lines, "@Serializable(with = AnyCodable.Companion.AnyCodableSerializer::class)")
+	lines = append(lines, "class AnyCodable(val value: Any?) {")
+	lines = append(lines, "    companion object {")
+	lines = append(lines, "        object AnyCodableSerializer : KSerializer<AnyCodable> {")
+	lines = append(lines, "")
+	lines = append(lines, "            @OptIn(InternalSerializationApi::class)")
+	lines = append(lines, "            override val descriptor: SerialDescriptor =")
+	lines = append(lines, "                buildSerialDescriptor(\"AnyCodable\", SerialKind.CONTEXTUAL)")
+	lines = append(lines, "")
+	lines = append(lines, "            override fun deserialize(decoder: Decoder): AnyCodable {")
+	lines = append(lines, "                val input = decoder as? JsonDecoder")
+	lines = append(lines, "                    ?: throw SerializationException(\"AnyCodable works only with JSON\")")
+	lines = append(lines, "")
+	lines = append(lines, "                val element = input.decodeJsonElement()")
+	lines = append(lines, "                return AnyCodable(decodeElement(element))")
+	lines = append(lines, "            }")
+	lines = append(lines, "")
+	lines = append(lines, "            private fun decodeElement(element: JsonElement): Any? {")
+	lines = append(lines, "                return when (element) {")
+	lines = append(lines, "")
+	lines = append(lines, "                    JsonNull -> null")
+	lines = append(lines, "")
+	lines = append(lines, "                    is JsonPrimitive -> {")
+	lines = append(lines, "                        element.booleanOrNull?.let { return it }")
+	lines = append(lines, "                        element.longOrNull?.let { return it.toInt() }")
+	lines = append(lines, "                        element.doubleOrNull?.let { return it }")
+	lines = append(lines, "                        element.content")
+	lines = append(lines, "                    }")
+	lines = append(lines, "")
+	lines = append(lines, "                    is JsonArray -> element.map { decodeElement(it) }")
+	lines = append(lines, "")
+	lines = append(lines, "                    is JsonObject -> element.mapValues { decodeElement(it.value) }")
+	lines = append(lines, "                }")
+	lines = append(lines, "            }")
+	lines = append(lines, "")
+	lines = append(lines, "            override fun serialize(encoder: Encoder, value: AnyCodable) {")
+	lines = append(lines, "                val output = encoder as? JsonEncoder")
+	lines = append(lines, "                    ?: throw SerializationException(\"AnyCodable works only with JSON\")")
+	lines = append(lines, "")
+	lines = append(lines, "                output.encodeJsonElement(encodeElement(value.value))")
+	lines = append(lines, "            }")
+	lines = append(lines, "")
+	lines = append(lines, "            private fun encodeElement(value: Any?): JsonElement {")
+	lines = append(lines, "                return when (value) {")
+	lines = append(lines, "")
+	lines = append(lines, "                    null -> JsonNull")
+	lines = append(lines, "")
+	lines = append(lines, "                    is Boolean -> JsonPrimitive(value)")
+	lines = append(lines, "")
+	lines = append(lines, "                    is Int -> JsonPrimitive(value)")
+	lines = append(lines, "")
+	lines = append(lines, "                    is Double -> JsonPrimitive(value)")
+	lines = append(lines, "")
+	lines = append(lines, "                    is String -> JsonPrimitive(value)")
+	lines = append(lines, "")
+	lines = append(lines, "                    is Map<*, *> -> JsonObject(")
+	lines = append(lines, "                        value.entries.associate {")
+	lines = append(lines, "                            val key = it.key as? String")
+	lines = append(lines, "                                ?: throw SerializationException(\"Map keys must be String\")")
+	lines = append(lines, "                            key to encodeElement(it.value)")
+	lines = append(lines, "                        }")
+	lines = append(lines, "                    )")
+	lines = append(lines, "")
+	lines = append(lines, "                    is List<*> -> JsonArray(")
+	lines = append(lines, "                        value.map { encodeElement(it) }")
+	lines = append(lines, "                    )")
+	lines = append(lines, "")
+	lines = append(lines, "                    else -> throw SerializationException(\"Unsupported JSON value: ${value::class}\")")
+	lines = append(lines, "                }")
+	lines = append(lines, "            }")
+	lines = append(lines, "        }")
+	lines = append(lines, "    }")
+	lines = append(lines, "}")
+	lines = append(lines, "")
+
+	for _, structType := range typeOrder {
+		lines = append(lines, generateSingleKotlinStruct(structType))
+		lines = append(lines, "")
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func generateSingleKotlinStruct(t reflect.Type) string {
+	if t.Kind() != reflect.Struct {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, "@Serializable")
+	lines = append(lines, "data class "+t.Name()+"(")
+
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if field.PkgPath != "" {
+			continue
+		}
+
+		jsonTag := field.Tag.Get("json")
+		fieldType := field.Type
+
+		typeStr := kotlinTypeToString(fieldType)
+
+		if jsonTag == "" || jsonTag == "-" {
+			if isOpaqueType(fieldType) {
+				lines = append(lines, fmt.Sprintf("    val %s: AnyCodable?", field.Name))
+			} else {
+				lines = append(lines, fmt.Sprintf("    val %s: %s?", field.Name, typeStr))
+			}
+			continue
+		}
+
+		tagValue := strings.Split(jsonTag, ",")[0]
+		fieldName := tagValue
+
+		if isOpaqueType(fieldType) {
+			lines = append(lines, fmt.Sprintf("    val %s: AnyCodable?", fieldName))
+			continue
+		}
+
+		optionalSuffix := ""
+		if !strings.HasSuffix(typeStr, "?") {
+			optionalSuffix = "?"
+		}
+		lines = append(lines, fmt.Sprintf("    val %s: %s%s", fieldName, typeStr, optionalSuffix))
+	}
+
+	lines = append(lines, ")")
 
 	return strings.Join(lines, "\n")
 }
