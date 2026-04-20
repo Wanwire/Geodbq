@@ -135,32 +135,35 @@ jobs:
           shasum -a 256 ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz > ${{ matrix.archive-name }}-${{ steps.version.outputs.version }}.tar.gz.sha256
         shell: bash
 
-      - name: Create release
-        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
-        run: gh release create "${{ github.ref_name }}" --generate-notes --draft=false --prerelease=false
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download all artifacts
-        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
-        uses: actions/download-artifact@v8
-        with:
-          path: downloaded
-
-      - name: Upload to release
-        if: matrix.os == 'Windows' && startsWith(github.ref, 'refs/tags/')
-        run: |
-          Get-ChildItem -Path downloaded -Recurse -File | ForEach-Object {
-            gh release upload "${{ github.ref_name }}" $_.FullName --clobber
-          }
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Upload release artifacts
         uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.archive-name }}
           path: release/
 
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Create release
+        run: gh release create "${{ github.ref_name }}" --generate-notes --draft=false --prerelease=false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: downloaded
+
+      - name: Upload to release
+        run: |
+          for dir in downloaded/*/; do
+            for file in "$dir"*; do
+              [ -f "$file" ] && gh release upload "${{ github.ref_name }}" "$file" --clobber
+            done
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
