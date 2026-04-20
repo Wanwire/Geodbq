@@ -67,7 +67,7 @@ jobs:
       - name: Build binary (Windows)
         if: matrix.goos == 'windows'
         run: |
-          go build -o ${{ matrix.binary-name }} -ldflags="-s -w" .
+          go build -trimpath -o ${{ matrix.binary-name }} -ldflags="-s -w" .
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -75,15 +75,15 @@ jobs:
       - name: Build binary (Linux)
         if: matrix.goos == 'linux'
         run: |
-          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -o ${{ matrix.binary-name }} -ldflags="-s -w" .
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} go build -trimpath -o ${{ matrix.binary-name }} -ldflags="-s -w" .
           file ${{ matrix.binary-name }}
 
       - name: Build universal binary (macOS)
         if: matrix.build-universal == true
         run: |
           # Build for both architectures
-          GOOS=darwin GOARCH=amd64 go build -o geodbq-amd64 -ldflags="-s -w" .
-          GOOS=darwin GOARCH=arm64 go build -o geodbq-arm64 -ldflags="-s -w" .
+          GOOS=darwin GOARCH=amd64 go build -trimpath -o geodbq-amd64 -ldflags="-s -w" .
+          GOOS=darwin GOARCH=arm64 go build -trimpath -o geodbq-arm64 -ldflags="-s -w" .
           
           # Create universal binary
           lipo -create geodbq-amd64 geodbq-arm64 -output geodbq
