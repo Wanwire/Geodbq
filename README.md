@@ -20,7 +20,7 @@ It allows you to:
 
 ## Requirements
 
-- Go 1.25 or newer
+- Go 1.26 or newer
 
 ## Installation
 
