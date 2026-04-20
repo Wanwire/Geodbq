@@ -223,6 +223,12 @@ var simulateRouteCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
+		// Validate config using Xray-core's Build method (same validation as Xray startup)
+		if _, err := xrayConf.Build(); err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
+			os.Exit(1)
+		}
+
 		routerCfg := xrayConf.RouterConfig
 		if routerCfg == nil {
 			fmt.Println("No routing section found in config.json")
@@ -239,6 +245,15 @@ var simulateRouteCmd = &cobra.Command{
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to build routing config: %v\n", err)
 			os.Exit(1)
+		}
+
+		// Validate each routing rule has at least one effective field
+		for i, rule := range routerProto.Rule {
+			_, err := rule.BuildCondition()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Invalid configuration: routing rule #%d has no effective fields\n", i+1)
+				os.Exit(1)
+			}
 		}
 
 		if len(routerProto.Rule) == 0 {
