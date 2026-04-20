@@ -654,6 +654,8 @@ func generateFullStructCode(t reflect.Type) string {
 	lines = append(lines, ")")
 	lines = append(lines, "")
 
+	sort.Slice(typeOrder, func(i, j int) bool { return typeOrder[i].Name() < typeOrder[j].Name() })
+
 	for _, structType := range typeOrder {
 		lines = append(lines, generateSingleStruct(structType))
 		lines = append(lines, "")
@@ -934,6 +936,8 @@ func generateSwiftStructCode(t reflect.Type) string {
 	lines = append(lines, "    }")
 	lines = append(lines, "}")
 	lines = append(lines, "")
+
+	sort.Slice(typeOrder, func(i, j int) bool { return typeOrder[i].Name() < typeOrder[j].Name() })
 
 	for _, structType := range typeOrder {
 		lines = append(lines, generateSingleSwiftStruct(structType))
@@ -1225,6 +1229,8 @@ func generateKotlinStructCode(t reflect.Type) string {
 	lines = append(lines, "    }")
 	lines = append(lines, "}")
 	lines = append(lines, "")
+
+	sort.Slice(typeOrder, func(i, j int) bool { return typeOrder[i].Name() < typeOrder[j].Name() })
 
 	for _, structType := range typeOrder {
 		lines = append(lines, generateSingleKotlinStruct(structType))
