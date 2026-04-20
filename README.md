@@ -47,6 +47,7 @@ geodbq [flags] [command]
 
 Commands:
   domain          Query matching geosite categories for a domain
+  extract         Generate Go/Swift/Kotlin struct code from Xray conf.Config
   help            Help about any command
   ip              Query country code(s) for an IP
   list-categories List all available country codes / categories
@@ -58,6 +59,23 @@ Flags:
       --geoip string     Path to geoip.dat (default: ./geoip.dat)
       --geosite string   Path to geosite.dat (default: ./geosite.dat)
   -h, --help             help for geodbq
+
+list-rules flags:
+      --max-show int    Maximum number of items to show (-1 = all)
+
+simulate-route flags:
+      --config string       Path to Xray config.json (default: config.json)
+      --domain string      Simulate traffic destined for this domain
+      --ip string         Simulate traffic destined to this IP address
+      --source-ip string   Simulate traffic originating from this IP (default: 127.0.0.1)
+      --prefer-ip string   Prefer IPv4 or IPv6 for DNS resolution
+      --inbound-tag string Simulate traffic from this inbound tag
+      --port string       Destination port
+      --protocol string   Protocol (e.g. bittorrent, http)
+      --network string     Network (tcp, udp)
+
+extract flags:
+      --lang string      Output language: golang, go, swift, s, kotlin, k (default: golang)
 ```
 
 ## Examples
@@ -160,9 +178,17 @@ Total domain rules: 1842
 Simulate how Xray-core would route a given domain or IP based on your config.json file. Shows the matching rule, specific geoip/geosite condition that matched, and the resulting outbound or balancer candidates.
 
 ```bash
+# Simulate traffic destined for a domain
 geodbq simulate-route --config config.json --domain google.com
+
+# Simulate traffic destined to an IP address
 geodbq simulate-route --config config.json --ip 8.8.8.8
-geodbq simulate-route --config config.json --domain youtube.com --ip 8.8.8.8 --source-ip 192.168.1.1
+
+# Simulate traffic from a specific source IP
+geodbq simulate-route --config config.json --domain youtube.com --source-ip 192.168.1.1
+
+# Simulate traffic from a specific inbound
+geodbq simulate-route --config config.json --domain netflix.com --inbound-tag socks
 ```
 
 Example output:
@@ -194,6 +220,27 @@ geodbq list-rules cn > cn-rules.txt
 - Domain strategy (AsIs, IpIfNonMatch, IpOnDemand) is supported: the tool will perform DNS lookups for IP-based strategies. Use `--prefer-ip ipv4|ipv6` to prefer IPv4 or IPv6 during DNS resolution. You can still provide `--ip` to force an IP-based simulation.
 - Balancer selection shows candidates but does not simulate actual load balancing (e.g., no ping check for leastping).
 - If no match, defaults to "no matching rule" (in real Xray, falls to first outbound).
+
+## Getting geoip.dat and geosite.dat
+
+Download the required data files:
+
+- **geoip.dat**: https://github.com/v2ray/geoip/releases/download/202604142202/geoip.dat
+- **geosite.dat**: https://github.com/v2ray/domain-list-community/releases/download/20260420014318/dlc.dat
+
+Rename dlc.dat to geosite.dat, or use the `--geosite` flag to specify the path.
+
+Place the files in the same directory as geodbq, or use `--geoip` and `--geosite` flags.
+
+## Testing
+
+```bash
+# Run all tests
+go test ./... -v
+
+# Run CLI tests only
+go test ./cmd/ -v
+```
 
 ## License
 MIT
